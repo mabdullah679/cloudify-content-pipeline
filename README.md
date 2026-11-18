@@ -1,51 +1,57 @@
 # Cloudify Studio Content Pipeline
 
-Topic in → script + shot list (Claude Code, grounded in CLOUDIFY_FACTS.md) →
-video clips (fal.ai/Kling) → narration (ElevenLabs) → edit/captions (ffmpeg) →
-publish (Zernio MCP) to Instagram Reels, Facebook Reels, YouTube Shorts.
+Three small scripts that turn a topic into a vertical short video: AI clips, narration, then an ffmpeg edit with burned-in captions. Claude Code drives them; publishing is done separately through the Zernio MCP.
 
-## One-time setup
+```
+topic ──> Claude Code (script + shot list, from CLOUDIFY_FACTS.md)
+            ├─> generate_video.py     ──> clip_01.mp4 ...   (fal.ai, Kling 2.6 Pro)   [external, paid]
+            ├─> generate_voiceover.py ──> narration.mp3     (ElevenLabs)              [external, paid/free tier]
+            └─> edit.sh (ffmpeg)      ──> final.mp4         (local)
+final.mp4 ──> Zernio MCP in Claude Code ──> Instagram / Facebook / YouTube            [external, not in this repo]
+```
 
-1. Fill in `assets/facts/CLOUDIFY_FACTS.md` — every claim in every video traces
-   back to this file. Nothing gets scripted that isn't listed here.
-2. Copy `.env.example` to `.env`, fill in FAL_KEY and ELEVENLABS_API_KEY.
-3. Connect Zernio's MCP server in Claude Code (see below) — this handles
-   publishing, no API key needed in .env for that part.
-4. `pip install requests --break-system-packages`
-5. Confirm `ffmpeg` is installed (`ffmpeg -version`).
+Not local: video generation (fal.ai), narration (ElevenLabs) and publishing (Zernio) are hosted services you must have accounts and keys for. Only the ffmpeg edit runs on your machine. No Zernio call exists in this repo's code.
 
-## Connecting Zernio MCP
+## Prerequisites
+- Python 3 with `requests` (`pip install requests`)
+- `ffmpeg` on PATH
+- A fal.ai key (`FAL_KEY`) and an ElevenLabs key (`ELEVENLABS_API_KEY`)
+- Not needed: Node, Docker, a database, any server.
 
-In Claude Code settings, add a custom MCP connector:
-    URL: https://mcp.zernio.com/mcp
-Sign in via OAuth with your Zernio account. This gives Claude Code direct
-tools to publish/schedule across Instagram, Facebook, and YouTube — no
-manual API scripting needed for the publish step.
+## Run it
+1. `cp .env.example .env`, fill in both keys. `.env` is git-ignored.
+2. Load them: `set -a; source .env; set +a` (macOS/Linux).
+3. Fill in `CLOUDIFY_FACTS.md`. It is currently an unfilled template (every field is `[TODO]`); nothing should be scripted until it is real.
+4. Generate clips (name them `clip_01.mp4`, `clip_02.mp4`, ... so they sort in order):
+   `python3 generate_video.py --prompt "..." --duration 5 --out clip_01.mp4`
+5. Generate narration: `python3 generate_voiceover.py --text "..." --out narration.mp3`
+6. Provide your own `.srt` caption file, then: `./edit.sh <clips_dir> narration.mp3 captions.srt final.mp4`
+7. Publish with the Zernio MCP from Claude Code (add the connector at `https://mcp.zernio.com/mcp`, sign in with OAuth). This step is manual and outside the scripts.
 
-## Daily workflow
+If a key is missing, each generator exits immediately with a "not set" message and makes no request. If `edit.sh` is run without 4 arguments it prints its usage and stops.
 
-Tell Claude Code (in this project): "Today's topic is [X feature/angle]."
+## What it does
+| Action | Result |
+|---|---|
+| `generate_video.py` with `--duration 5` or `10` | One 9:16 clip saved to `--out` (fal.ai Kling 2.6 Pro) |
+| `generate_voiceover.py` | One mp3 saved to `--out`; default voice id is set in the file, override with `--voice-id` |
+| `edit.sh` | Concatenates `clip_*.mp4` in sorted order, replaces audio with the narration (cut to the shorter of the two), burns in the `.srt` |
 
-Claude Code will:
-1. Pull the relevant fact(s) from CLOUDIFY_FACTS.md
-2. Do a quick keyword pass (what would someone search to find this?)
-3. Write a script (hook in first 2-3s, founder-voice direct-to-camera style,
-   15-45s, one feature/problem per video) + shot list + caption + hashtags
-4. Call generate_video.py per shot (stitching multiple 5-10s clips as needed)
-5. Call generate_voiceover.py for narration
-6. Run edit.sh to stitch + caption + finalize
-7. Use the Zernio MCP tools to publish/schedule to all three platforms
+## Tests
+There are none. The generators call paid APIs, so they are not run in CI. CI (`.github/workflows/ci.yml`) runs a Python syntax check, `shellcheck --severity=warning`, and a gitleaks scan of the commits in each PR. None of that exercises the generators or ffmpeg.
 
-## Files
+## Layout
+| Path | Role |
+|---|---|
+| [generate_video.py](generate_video.py) | fal.ai clip generation |
+| [generate_voiceover.py](generate_voiceover.py) | ElevenLabs narration |
+| [edit.sh](edit.sh) | ffmpeg stitch + captions |
+| [CLOUDIFY_FACTS.md](CLOUDIFY_FACTS.md) | claims source of truth (template, unfilled) |
+| [.env.example](.env.example) | the two keys the scripts read |
+| [CLAUDE.md](CLAUDE.md) | notes for Claude Code sessions, incl. the known key-in-history issue |
+| [.github/workflows/ci.yml](.github/workflows/ci.yml) | CI |
 
-- `assets/facts/CLOUDIFY_FACTS.md` — source of truth, edit this first
-- `scripts/generate_video.py` — fal.ai/Kling clip generation
-- `scripts/generate_voiceover.py` — ElevenLabs narration
-- `scripts/edit.sh` — ffmpeg stitch + caption burn-in
-- `output/` — finished videos land here before publishing
-
-## Cost per video (budget tier, 1080p)
-
-~$0.75–1.25 in fal.ai credits per 20-30s video (3-5 stitched clips).
-ElevenLabs free tier covers narration at this volume.
-Zernio: flat monthly per connected account, not per-post.
+## Design notes
+- Clips are stitched, not generated long: Kling caps a single generation at 5 or 10 seconds, so a 20-30 s short needs several clips.
+- Facts live in one file so a script can be traced to a listed claim rather than invented.
+- Cost per video (about 0.75-1.25 USD of fal.ai credit for 3-5 clips) is the owner's estimate, not measured here.
